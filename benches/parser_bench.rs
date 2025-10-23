@@ -5,15 +5,19 @@ use std::fs;
 
 // Import the modules we need to benchmark
 mod atom_counts {
+    #![allow(dead_code, unused_imports)]
     include!("../src/main/rust/atom_counts.rs");
 }
 mod errors {
+    #![allow(dead_code, unused_imports)]
     include!("../src/main/rust/errors.rs");
 }
 mod periodic_table {
+    #![allow(dead_code, unused_imports)]
     include!("../src/main/rust/periodic_table.rs");
 }
 mod mf_parser {
+    #![allow(dead_code, unused_imports)]
     include!("../src/main/rust/mf_parser.rs");
 }
 
