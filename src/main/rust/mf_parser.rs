@@ -20,14 +20,12 @@ pub struct ParseInput<'a>(&'a [u8]);
 pub struct SanitizedInput<'a>(&'a [u8]);
 
 impl<'a> From<&'a [u8]> for ParseInput<'a> {
-    //#[inline(always)]
     fn from(input: &'a [u8]) -> Self {
         Self(input)
     }
 }
 
 impl<'a> From<&'a str> for ParseInput<'a> {
-    //#[inline(always)]
     fn from(input: &'a str) -> Self {
         Self(input.as_bytes())
     }
@@ -37,7 +35,6 @@ impl<'a> From<&'a str> for ParseInput<'a> {
 impl<'a> TryFrom<ParseInput<'a>> for SanitizedInput<'a> {
     type Error = ChemikazeError;
 
-    //#[inline(always)]
     fn try_from(input: ParseInput<'a>) -> Result<Self, Self::Error> {
         let input = input.0.trim_ascii();
         if input.is_empty() {
@@ -71,7 +68,6 @@ impl MfParser {
         Self::with_capacity(DEFAULT_BUFFER_SIZE)
     }
 
-    //#[inline(always)]
     #[allow(dead_code)]
     pub fn parse_single<'a>(
         input: impl Into<ParseInput<'a>>,
@@ -82,7 +78,6 @@ impl MfParser {
         parser.parse_sanitized(sanitized_input)
     }
 
-    //#[inline(always)]
     pub fn parse<'a>(
         &mut self,
         input: impl Into<ParseInput<'a>>,

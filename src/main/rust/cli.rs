@@ -21,21 +21,40 @@ fn main() {
     let mut parser = MfParser::new();
 
     let start = Instant::now();
-    parse_mfs(&mut parser, &lines, repeats);
+    let hcount = parse_mfs(&mut parser, &lines, repeats);
     let elapsed = start.elapsed();
     println!(
-        "[RUST BENCHMARK] {mf_cnt} MFs in {:.2?} ({}MF/s)",
+        "[RUST BENCHMARK]\t{mf_cnt} {hcount} MFs in {:.2?} ({}MF/s)",
+        elapsed,
+        (mf_cnt as f64 / elapsed.as_secs_f64()) as u32
+    );
+
+    let start = Instant::now();
+    let hcount = parse_mfs_single(&lines, repeats);
+    let elapsed = start.elapsed();
+    println!(
+        "[RUST BENCHMARK SINGLE]\t{mf_cnt} {hcount} MFs in {:.2?} ({}MF/s)",
         elapsed,
         (mf_cnt as f64 / elapsed.as_secs_f64()) as u32
     );
 }
 
 fn parse_mfs(parser: &mut MfParser, mfs: &Vec<&[u8]>, n: usize) -> u32 {
-    let mut hcount: u32 = 0;
+    let mut hcount = 0;
     for _ in 0..n {
         for mf in mfs {
             hcount += parser.parse(*mf).unwrap().counts[0];
         }
     }
-    hcount // return something so that this isn't optimized out
+    hcount
+}
+
+fn parse_mfs_single(mfs: &Vec<&[u8]>, n: usize) -> u32 {
+    let mut hcount = 0;
+    for _ in 0..n {
+        for mf in mfs {
+            hcount += MfParser::parse_single(*mf).unwrap().counts[0];
+        }
+    }
+    hcount
 }
