@@ -1,9 +1,11 @@
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct ChemikazeError {
     pub msg: String,
-    pub kind: ErrorKind
+    pub kind: ErrorKind,
 }
 #[derive(Debug, PartialEq, Eq)]
-pub enum ErrorKind { 
-    Parsing, UnknownElement
+pub enum ErrorKind {
+    Parsing,
+    UnknownElement,
 }

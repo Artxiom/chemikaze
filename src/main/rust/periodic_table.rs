@@ -1,5 +1,4 @@
 use crate::errors::{ChemikazeError, ErrorKind};
-use crate::util::bytes_to_string;
 
 /// They are roughly sorted by popularity in organic chemistry. Well, at least the first elements
 /// are. Doesn't contain elements that would never be used in organic chemistry.
@@ -14,14 +13,28 @@ pub const EARTH_SYMBOLS: [&str; 85] = [
 pub const EARTH_ELEMENT_CNT: usize = EARTH_SYMBOLS.len();
 /// Same as EARTH_SYMBOLS, but keep symbols as bytes so that we don't have to turn them into
 /// String on each lookup. Each symbol is 2 bytes: for 1-symbol elements like H, the 2nd byte is 0.
-const EARTH_SYMBOLS_AS_BYTES: [u8; EARTH_ELEMENT_CNT*2] = build_symbols_as_bytes();
+const EARTH_SYMBOLS_AS_BYTES: [u8; EARTH_ELEMENT_CNT * 2] = build_symbols_as_bytes();
 /// The size of {@link #ELEMENTHASH_TO_ELEMENT} hash table
 const INDEX_BUCKET_CNT: usize = 512;
 const INDEX_HASH_MASK: usize = INDEX_BUCKET_CNT - 1;
 const ELEMENTHASH_TO_ELEMENT: [u8; INDEX_BUCKET_CNT] = build_index();
 
+pub fn join(symbol: &[u8]) -> String {
+    let mut s = symbol[0].to_string();
+    for b in &symbol[1..symbol.len() - 1] {
+        s = s + "," + b.to_string().as_str();
+    }
+    s + "," + symbol[symbol.len() - 1].to_string().as_str()
+}
+
+pub fn bytes_to_string(ascii: &[u8]) -> String {
+    String::from_utf8(Vec::from(ascii))
+        .unwrap_or_else(|_| format!("Invalid ASCII sequence: [{}]", join(&ascii)))
+}
+
 /// `symbol` - "H", "Na", etc. Only the elements that actually exist on the Earth are used,
 ///           see `EARTH_SYMBOLS` array.
+#[allow(dead_code)]
 pub fn get_element_by_symbol_str(symbol: &str) -> Result<u8, ChemikazeError> {
     let ascii = symbol.as_bytes();
     let mut bytes: [u8; 2] = [0; 2];
@@ -35,14 +48,16 @@ pub fn get_element_by_symbol_str(symbol: &str) -> Result<u8, ChemikazeError> {
 pub fn get_element_by_symbol_bytes(bytes: [u8; 2]) -> Result<u8, ChemikazeError> {
     let element = ELEMENTHASH_TO_ELEMENT[hash(bytes)];
     let i = (element * 2) as usize; // Java impl doesn't need to multiply here
-    if EARTH_SYMBOLS_AS_BYTES[i] != bytes[0] || EARTH_SYMBOLS_AS_BYTES[i+1] != bytes[1] {
-        let mut element_str = bytes_to_string(&bytes);
-        if bytes[1] == 0 {
-            element_str = bytes_to_string(&bytes[0..1]);
-        }
+    if EARTH_SYMBOLS_AS_BYTES[i] != bytes[0] || EARTH_SYMBOLS_AS_BYTES[i + 1] != bytes[1] {
+        let element_str = if bytes[1] == 0 {
+            bytes_to_string(&bytes[0..1])
+        } else {
+            bytes_to_string(&bytes)
+        };
+
         return Err(ChemikazeError {
             msg: String::from(format!("Unknown chemical symbol: {element_str}")),
-            kind: ErrorKind::UnknownElement
+            kind: ErrorKind::UnknownElement,
         });
     }
     Ok(element)
@@ -54,15 +69,20 @@ pub const fn hash(symbol: [u8; 2]) -> usize {
     ((symbol[0] as usize * 277) ^ symbol[1] as usize) & INDEX_HASH_MASK
 }
 
-const fn build_index() ->  [u8; INDEX_BUCKET_CNT] {
+const fn build_index() -> [u8; INDEX_BUCKET_CNT] {
     // a precaution to see if we made an error in the hash()
     let mut taken_buckets = [false; INDEX_BUCKET_CNT];
     let mut result = [0; INDEX_BUCKET_CNT];
     let mut i = 0;
     while i < EARTH_SYMBOLS.len() {
-        let bucket = hash([EARTH_SYMBOLS_AS_BYTES[i*2], EARTH_SYMBOLS_AS_BYTES[i*2+1]]);
+        let bucket = hash([
+            EARTH_SYMBOLS_AS_BYTES[i * 2],
+            EARTH_SYMBOLS_AS_BYTES[i * 2 + 1],
+        ]);
         if taken_buckets[i] {
-            panic!("Wrong hash function for the Symbol HashTable: 2 symbols were mapped to the same bucket")
+            panic!(
+                "Wrong hash function for the Symbol HashTable: 2 symbols were mapped to the same bucket"
+            )
         }
         taken_buckets[i] = true;
         result[bucket] = i as u8;
@@ -70,8 +90,8 @@ const fn build_index() ->  [u8; INDEX_BUCKET_CNT] {
     }
     result
 }
-const fn build_symbols_as_bytes() -> [u8; EARTH_ELEMENT_CNT*2] {
-    let mut symbol_bytes: [u8; EARTH_ELEMENT_CNT*2] = [0u8; EARTH_ELEMENT_CNT*2];
+const fn build_symbols_as_bytes() -> [u8; EARTH_ELEMENT_CNT * 2] {
+    let mut symbol_bytes: [u8; EARTH_ELEMENT_CNT * 2] = [0u8; EARTH_ELEMENT_CNT * 2];
     let mut i = 0;
     while i < EARTH_ELEMENT_CNT {
         let b = EARTH_SYMBOLS[i].as_bytes();
@@ -98,6 +118,9 @@ mod test {
     #[test]
     fn returns_element_by_its_symbol_bytes() {
         assert_eq!(0u8, get_element_by_symbol_bytes(['H' as u8, 0]).unwrap());
-        assert_eq!(82u8, get_element_by_symbol_bytes(['H' as u8, 'e' as u8]).unwrap());
+        assert_eq!(
+            82u8,
+            get_element_by_symbol_bytes(['H' as u8, 'e' as u8]).unwrap()
+        );
     }
 }

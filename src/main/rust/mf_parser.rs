@@ -3,171 +3,286 @@ use crate::errors::ChemikazeError;
 use crate::errors::ErrorKind::Parsing;
 use crate::periodic_table;
 use crate::periodic_table::EARTH_ELEMENT_CNT;
-use crate::util::{*};
 
-const MF_PUNCTUATION: [u8;7] = ['(' as u8, ')' as u8, '+' as u8, '-' as u8, '.' as u8, '[' as u8, ']' as u8];
+const OP: u8 = '(' as u8;
+const CP: u8 = ')' as u8;
+const DOT: u8 = '.' as u8;
+const ZERO: u8 = '0' as u8;
 
-pub fn parse_mf(mf: &str) -> Result<AtomCounts, ChemikazeError> {
-    parse_mf_ascii(mf.as_bytes())
-}
-pub fn parse_mf_ascii(mf: &[u8]) -> Result<AtomCounts, ChemikazeError> {
-    parse_mf_ascii_chunk(mf, index_of_start(mf), index_of_end(mf))
-}
-pub fn parse_mf_ascii_chunk(mf: &[u8], mf_start: usize, mf_end: usize) -> Result<AtomCounts, ChemikazeError> {
-    if mf_start >= mf_end {
-        return Err(ChemikazeError{ kind: Parsing, msg: String::from("Empty Molecular Formula") })
+const MF_PUNCTUATION: [u8; 7] = [OP, CP, '+' as u8, '-' as u8, DOT, '[' as u8, ']' as u8];
+
+const DEFAULT_BUFFER_SIZE: usize = 128;
+
+/// ParseInput represents a molecular formula input.
+pub struct ParseInput<'a>(&'a [u8]);
+
+/// SanitizedInput represents a sanitized molecular formula input (surrounding whitespaces removed, non-empty)
+pub struct SanitizedInput<'a>(&'a [u8]);
+
+impl<'a> From<&'a [u8]> for ParseInput<'a> {
+    //#[inline(always)]
+    fn from(input: &'a [u8]) -> Self {
+        Self(input)
     }
-    let mut coeff: Vec<u32> = vec![0u32; mf_end - mf_start];
-    let mut elements: Vec<u8> = vec![0u8; mf_end - mf_start];
-    let mut i = mf_start;
-
-    err_if_invalid_mf(mf, mf_start, mf_end,
-                      read_symbols_and_coeffs(mf, &mut i, mf_start, mf_end, &mut elements, &mut coeff)
-    )?;
-    err_if_invalid_mf(mf, mf_start, mf_end,
-        find_and_apply_group_coeff(mf, &mut i, mf_start, mf_end, &mut coeff)
-    )?;
-    Ok(AtomCounts{counts: combine_into_atom_counts(&elements, &coeff)})
 }
 
-fn err_if_invalid_mf<T>(mf: &[u8], mf_start: usize, mf_end: usize,
-                     result: Result<T, ChemikazeError>) -> Result<(), ChemikazeError> {
-    if result.is_err() {
-        let mf_str = bytes_to_string(&mf[mf_start..mf_end]);
-        let msg = String::from(format!("Invalid Molecular Formula: {mf_str}. Details: {}",
-                                       result.err().unwrap().msg));
-        return Err(ChemikazeError { kind: Parsing, msg });
+impl<'a> From<&'a str> for ParseInput<'a> {
+    //#[inline(always)]
+    fn from(input: &'a str) -> Self {
+        Self(input.as_bytes())
     }
-    Ok(())
 }
 
-fn read_symbols_and_coeffs(mf: &[u8], i: &mut usize, mf_start: usize, mf_end: usize,
-                           result_elements: &mut Vec<u8>, coeff: &mut Vec<u32>) -> Result<(), ChemikazeError> {
-    *i = mf_start;
-    while *i < mf_end {
-        if is_big_letter(mf[*i]) {
-            consume_symbol_and_coeff(mf, i, mf_start, mf_end, result_elements, coeff)?;
-        } else if MF_PUNCTUATION.contains(&mf[*i]) || is_digit(mf[*i]) { // digit - meaning (xx)N or Nxx
-            *i += 1;
-        } else {
+/// Creates a new `SanitizedInput` from a `ParseInput`.
+impl<'a> TryFrom<ParseInput<'a>> for SanitizedInput<'a> {
+    type Error = ChemikazeError;
+
+    //#[inline(always)]
+    fn try_from(input: ParseInput<'a>) -> Result<Self, Self::Error> {
+        let input = input.0.trim_ascii();
+        if input.is_empty() {
             return Err(ChemikazeError {
                 kind: Parsing,
-                msg: String::from(format!("Unexpected symbol: {:?}", char::from(mf[*i])))
+                msg: "Empty Molecular Formula".into(),
             });
         }
+
+        Ok(Self(input))
     }
-    Ok(())
-}
-/// There are 2 types of group coefficients:
-///
-/// * At the beginning: 5Cl or O.5Cl - for this we run scale_forward()
-/// * After parenthesis: (CO)2 - for this we run scale_backward()
-fn find_and_apply_group_coeff(mf: &[u8], i: &mut usize, mf_start: usize, mf_end: usize,
-                              mut result_coeffs: &mut [u32]) -> Result<(), ChemikazeError> {
-    let mut curr_stack_depth = 0;
-    *i = mf_start;
-    'out: while *i < mf_end {
-        scale_forward(mf, mf_start, mf_end, *i, curr_stack_depth, &mut result_coeffs,
-                      consume_coeff(mf, i, mf_end));
-        if *i >= mf_end {
-            break
-        }
-        while is_alphanumeric(mf[*i]) {
-            *i += 1;
-            if *i >= mf_end {
-                break 'out;
-            }
-        }
-        if mf[*i] == OP {
-            curr_stack_depth += 1;
-        } else if mf[*i] == CP {
-            let mut chunk_end = 0;
-            if *i > 0 {
-                chunk_end = *i - 1;
-            }
-            *i += 1;
-            scale_backward(mf, mf_start, chunk_end, curr_stack_depth, &mut result_coeffs,
-                           consume_coeff(mf, i, mf_end));
-            curr_stack_depth -= 1;
-            continue;
-        }
-        *i += 1;
-    }
-    if curr_stack_depth != 0 {
-        return Err(ChemikazeError{
-            kind: Parsing,
-            msg: String::from("The opening and closing parentheses don't match.")
-        })
-    }
-    Ok(())
-}
-fn scale_forward(mf: &[u8], mf_start: usize, mf_end: usize,
-                 mut lo: usize, curr_stack_depth: i32, result_coeffs: &mut [u32], group_coeff: u32) {
-    if group_coeff == 1 {
-        return;// usually the case, as people rarely put coefficients in front of MF
-    }
-    let mut depth = curr_stack_depth;
-    while lo < mf_end && depth >= curr_stack_depth {
-        if      mf[lo] == OP { depth += 1}
-        else if mf[lo] == CP { depth -= 1}
-        else if mf[lo] == DOT && depth == curr_stack_depth {
-            break;
-        }
-        result_coeffs[lo - mf_start] *= group_coeff;
-        lo += 1;
-    }
-}
-fn scale_backward(mf: &[u8], mf_start: usize, mut hi: usize/*inclusive*/,
-                  curr_stack_depth: i32, result_coeffs: &mut [u32], group_coeff: u32) {
-    let mut depth = curr_stack_depth;
-    while hi > mf_start && depth <= curr_stack_depth {
-        if      mf[hi] == OP { depth += 1 }
-        else if mf[hi] == CP { depth -= 1 }
-        result_coeffs[hi - mf_start] *= group_coeff;
-        hi -= 1;
-    }
-}
-fn combine_into_atom_counts(elements: &Vec<u8>, coeffs: &Vec<u32>) -> [u32; EARTH_ELEMENT_CNT] {
-    let mut result = [0u32; EARTH_ELEMENT_CNT];
-    let mut i = 0;
-    while i < coeffs.len() {
-        if coeffs[i] > 0 {
-            result[elements[i] as usize] += coeffs[i];
-        }
-        i+=1;
-    }
-    result
 }
 
-fn consume_symbol_and_coeff(mf: &[u8], i: &mut usize, mf_start: usize, mf_end: usize,
-                            result_elements: &mut Vec<u8>, result_coeffs: &mut Vec<u32>) -> Result<(), ChemikazeError> {
-    let result_position = *i - mf_start;
-    let mut b: [u8; 2] = [mf[*i], 0]; // TODO: switch to 2 variables b0, b1? seems unnecessary..
-    *i += 1;
-    if *i < mf_end && is_small_letter(mf[*i]) { // we didn't reach the end and the next byte is small letter
-        b[1] = mf[*i];
-        *i += 1;// increment so that consumeMultiplier() starts parsing the coefficient next
-    }
-    result_elements[result_position] = periodic_table::get_element_by_symbol_bytes(b)?;
-    result_coeffs[result_position] = consume_coeff(mf, i, mf_end);//can handle if *i is out of bounds
-    Ok(())
+/// Molecular Formula Parser
+pub struct MfParser {
+    pos: usize,
+    elements: Vec<u8>,
+    coeffs: Vec<u32>,
 }
 
-fn consume_coeff(mf: &[u8], i: &mut usize, mf_end: usize) -> u32 {
-    if *i >= mf_end || !is_digit(mf[*i]) {
-        return 1;
+impl MfParser {
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            pos: 0,
+            elements: Vec::with_capacity(capacity),
+            coeffs: Vec::with_capacity(capacity),
+        }
     }
-    let mut multiplier: u32 = 0;
-    while *i < mf_end && is_digit(mf[*i]) {
-        multiplier = multiplier * 10 + (mf[*i] - _0) as u32;
-        *i += 1;
+
+    pub fn new() -> Self {
+        Self::with_capacity(DEFAULT_BUFFER_SIZE)
     }
-    multiplier
+
+    //#[inline(always)]
+    #[allow(dead_code)]
+    pub fn parse_single<'a>(
+        input: impl Into<ParseInput<'a>>,
+    ) -> Result<AtomCounts, ChemikazeError> {
+        let input = input.into();
+        let sanitized_input = SanitizedInput::try_from(input)?;
+        let mut parser = MfParser::with_capacity(sanitized_input.0.len());
+        parser.parse_sanitized(sanitized_input)
+    }
+
+    //#[inline(always)]
+    pub fn parse<'a>(
+        &mut self,
+        input: impl Into<ParseInput<'a>>,
+    ) -> Result<AtomCounts, ChemikazeError> {
+        let input = SanitizedInput::try_from(input.into())?;
+        self.parse_sanitized(input)
+    }
+
+    fn parse_sanitized(&mut self, input: SanitizedInput) -> Result<AtomCounts, ChemikazeError> {
+        let input = input.0;
+
+        // Initialize working vectors
+        self.coeffs.clear();
+        self.elements.clear();
+        self.elements.resize(input.len(), 0);
+        self.coeffs.resize(input.len(), 0);
+
+        // First pass: read symbols and their immediate coefficients
+        self.pos = 0;
+        self.read_symbols_and_coeffs(input)?;
+
+        // Second pass: apply group coefficients (parentheses and leading numbers)
+        self.pos = 0;
+        self.apply_group_coefficients(input)?;
+
+        // Combine into final counts
+        let mut counts = [0u32; EARTH_ELEMENT_CNT];
+        self.elements
+            .iter()
+            .zip(self.coeffs.iter())
+            .for_each(|(&element, &coeff)| {
+                if coeff > 0 {
+                    counts[element as usize] += coeff;
+                }
+            });
+
+        Ok(AtomCounts { counts })
+    }
+
+    fn read_symbols_and_coeffs(&mut self, input: &[u8]) -> Result<(), ChemikazeError> {
+        while self.pos < input.len() {
+            let letter = input[self.pos];
+
+            if letter.is_ascii_uppercase() {
+                let start_pos = self.pos;
+                let element = self.parse_element_symbol(input)?;
+                let coeff = self.parse_coefficient(input);
+
+                self.elements[start_pos] = element;
+                self.coeffs[start_pos] = coeff;
+            } else if letter.is_ascii_digit() || MF_PUNCTUATION.contains(&letter) {
+                self.pos += 1;
+            } else {
+                return Err(ChemikazeError {
+                    kind: Parsing,
+                    msg: format!("Unexpected symbol: '{}'", char::from(letter)),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn parse_element_symbol(&mut self, input: &[u8]) -> Result<u8, ChemikazeError> {
+        if self.pos >= input.len() {
+            return Err(ChemikazeError {
+                kind: Parsing,
+                msg: "Unexpected end of input".into(),
+            });
+        }
+
+        let first = input[self.pos];
+        self.pos += 1;
+
+        let symbol = if self.pos < input.len() && input[self.pos].is_ascii_lowercase() {
+            let second = input[self.pos];
+            self.pos += 1;
+            [first, second]
+        } else {
+            [first, 0]
+        };
+
+        periodic_table::get_element_by_symbol_bytes(symbol)
+    }
+
+    fn parse_coefficient(&mut self, input: &[u8]) -> u32 {
+        if self.pos >= input.len() || !input[self.pos].is_ascii_digit() {
+            return 1;
+        }
+
+        let mut coeff = 0u32;
+        while self.pos < input.len() && input[self.pos].is_ascii_digit() {
+            coeff = coeff * 10 + (input[self.pos] - ZERO) as u32;
+            self.pos += 1;
+        }
+        coeff
+    }
+
+    fn apply_group_coefficients(&mut self, input: &[u8]) -> Result<(), ChemikazeError> {
+        self.pos = 0;
+        let mut paren_depth = 0i32;
+
+        while self.pos < input.len() {
+            // Handle leading coefficients like "2H2O"
+            if input[self.pos].is_ascii_digit() {
+                let coeff = self.parse_coefficient(input);
+                self.scale_forward(input, coeff, paren_depth);
+            }
+
+            // Skip alphanumeric characters
+            while self.pos < input.len() && input[self.pos].is_ascii_alphanumeric() {
+                self.pos += 1;
+            }
+
+            if self.pos >= input.len() {
+                break;
+            }
+
+            match input[self.pos] {
+                OP => {
+                    paren_depth += 1;
+                    self.pos += 1;
+                }
+                CP => {
+                    let close_pos = self.pos;
+                    self.pos += 1;
+                    let coeff = self.parse_coefficient(input);
+                    self.scale_backward(input, close_pos, coeff, paren_depth);
+                    paren_depth -= 1;
+                }
+                _ => self.pos += 1,
+            }
+        }
+
+        if paren_depth != 0 {
+            return Err(ChemikazeError {
+                kind: Parsing,
+                msg: "The opening and closing parentheses don't match.".into(),
+            });
+        }
+
+        Ok(())
+    }
+
+    fn scale_forward(&mut self, input: &[u8], group_coeff: u32, curr_depth: i32) {
+        if group_coeff == 1 {
+            return;
+        }
+
+        let mut depth = curr_depth;
+        let mut pos = self.pos;
+
+        while pos < input.len() && depth >= curr_depth {
+            match input[pos] {
+                OP => depth += 1,
+                CP => depth -= 1,
+                DOT if depth == curr_depth => break,
+                _ => {}
+            }
+
+            self.coeffs[pos] = self.coeffs[pos].saturating_mul(group_coeff);
+            pos += 1;
+        }
+    }
+
+    fn scale_backward(
+        &mut self,
+        input: &[u8],
+        close_pos: usize,
+        group_coeff: u32,
+        curr_depth: i32,
+    ) {
+        if group_coeff == 1 {
+            return;
+        }
+
+        let mut depth = curr_depth;
+        let mut pos = close_pos;
+
+        while pos > 0 && depth <= curr_depth {
+            pos -= 1;
+
+            match input[pos] {
+                OP => depth += 1,
+                CP => depth -= 1,
+                _ => {}
+            }
+
+            self.coeffs[pos] = self.coeffs[pos].saturating_mul(group_coeff);
+        }
+    }
 }
 
 #[cfg(test)]
 mod parse_mf_test {
     use super::*;
+
+    //#[inline(always)]
+    pub fn parse_mf<'a>(input: impl Into<ParseInput<'a>>) -> Result<AtomCounts, ChemikazeError> {
+        MfParser::parse_single(input)
+    }
 
     #[test]
     fn simple_mf_is_parsed_into_counts() {
@@ -175,22 +290,32 @@ mod parse_mf_test {
         assert_eq!("H2O", parse_mf("HOH").unwrap().to_string());
         assert_eq!("H132C67O3N8", parse_mf("C67H132N8O3").unwrap().to_string());
     }
+
     #[test]
     fn complicated_mf_is_parsed_into_counts() {
-        assert_eq!("H12O6NSCl3Na3", parse_mf("[(2H2O.NaCl)3S.N]2-").unwrap().to_string());
-        assert_eq!("H12O6NSCl3Na3", parse_mf(" [(2H2O.NaCl)3S.N]2- ").unwrap().to_string());
+        assert_eq!(
+            "H12O6NSCl3Na3",
+            parse_mf("[(2H2O.NaCl)3S.N]2-").unwrap().to_string()
+        );
+        assert_eq!(
+            "H12O6NSCl3Na3",
+            parse_mf(" [(2H2O.NaCl)3S.N]2- ").unwrap().to_string()
+        );
     }
+
     #[test]
     fn errs_on_empty_mf() {
         assert_eq!("Empty Molecular Formula", parse_mf("").unwrap_err().msg);
         assert_eq!("Empty Molecular Formula", parse_mf(" ").unwrap_err().msg);
         assert_eq!("Empty Molecular Formula", parse_mf("  ").unwrap_err().msg);
     }
+
     #[test]
     fn trims_input() {
         assert_eq!("H8C2", parse_mf("  CH4CH4 ").unwrap().to_string());
         assert_eq!("H5C2", parse_mf("  (CH4).[CH]-  ").unwrap().to_string());
     }
+
     #[test]
     fn parenthesis_multiply_counts() {
         assert_eq!("H8C2", parse_mf("(CH4CH4)").unwrap().to_string());
@@ -198,49 +323,71 @@ mod parse_mf_test {
         assert_eq!("H16C5", parse_mf("C(CH4CH4)2").unwrap().to_string());
         assert_eq!("H4C2O4P", parse_mf("(C(OH)2)2P").unwrap().to_string());
         assert_eq!("C2O2PS8", parse_mf("(C(2S)2O)2P").unwrap().to_string());
-        assert_eq!("H2C2O2PS4", parse_mf("(C(OH))2(S(S))2P").unwrap().to_string());
+        assert_eq!(
+            "H2C2O2PS4",
+            parse_mf("(C(OH))2(S(S))2P").unwrap().to_string()
+        );
     }
+
     #[test]
     fn number_at_the_beginning_multiples_counts() {
         assert_eq!("H4O2", parse_mf("2H2O").unwrap().to_string());
         assert_eq!("", parse_mf("0H2O").unwrap().to_string());
     }
+
     #[test]
     fn sign_is_ignored_in_counts() {
         assert_eq!("H8C2", parse_mf("[CH4CH4]+").unwrap().to_string());
         assert_eq!("H8C2", parse_mf("[CH4CH4]2+").unwrap().to_string());
     }
+
     #[test]
     fn dots_separate_components_but_components_are_summed_up() {
         assert_eq!("H6CN", parse_mf("NH3.CH3").unwrap().to_string());
         assert_eq!("H9C2N", parse_mf("NH3.2CH3").unwrap().to_string());
         assert_eq!("H9C2N", parse_mf("2CH3.NH3").unwrap().to_string());
     }
+
     #[test]
     fn errs_if_parenthesis_do_not_match() {
-        assert_eq!("Invalid Molecular Formula: (C. Details: The opening and closing parentheses don't match.",
-                   parse_mf("(C").unwrap_err().msg);
-        assert_eq!("Invalid Molecular Formula: )C. Details: The opening and closing parentheses don't match.",
-                   parse_mf(")C").unwrap_err().msg);
-        assert_eq!("Invalid Molecular Formula: C). Details: The opening and closing parentheses don't match.",
-                   parse_mf("C)").unwrap_err().msg);
-        assert_eq!("Invalid Molecular Formula: C(. Details: The opening and closing parentheses don't match.",
-                   parse_mf("C(").unwrap_err().msg);
-        assert_eq!("Invalid Molecular Formula: (C)). Details: The opening and closing parentheses don't match.",
-                   parse_mf("(C))").unwrap_err().msg);
-        assert_eq!("Invalid Molecular Formula: (C(OH)2(S(S))2P. Details: The opening and closing parentheses don't match.",
-                   parse_mf("(C(OH)2(S(S))2P").unwrap_err().msg);
+        assert_eq!(
+            "The opening and closing parentheses don't match.",
+            parse_mf("(C").unwrap_err().msg
+        );
+        assert_eq!(
+            "The opening and closing parentheses don't match.",
+            parse_mf(")C").unwrap_err().msg
+        );
+        assert_eq!(
+            "The opening and closing parentheses don't match.",
+            parse_mf("C)").unwrap_err().msg
+        );
+        assert_eq!(
+            "The opening and closing parentheses don't match.",
+            parse_mf("C(").unwrap_err().msg
+        );
+        assert_eq!(
+            "The opening and closing parentheses don't match.",
+            parse_mf("(C))").unwrap_err().msg
+        );
+        assert_eq!(
+            "The opening and closing parentheses don't match.",
+            parse_mf("(C(OH)2(S(S))2P").unwrap_err().msg
+        );
     }
+
     #[test]
-    fn errs_if_symbol_is_not_known() {
+    fn errs_if_symbol_is_invalid() {
+        use crate::errors::ErrorKind::UnknownElement;
         let err = parse_mf("A").err().unwrap();
-        assert_eq!(Parsing, err.kind);
-        assert_eq!("Invalid Molecular Formula: A. Details: Unknown chemical symbol: A", err.msg);
+        assert_eq!(UnknownElement, err.kind);
+        assert!(err.msg.contains("Unknown chemical symbol: A"));
 
         let err = parse_mf("o").err().unwrap();
         assert_eq!(Parsing, err.kind);
-        assert_eq!("Invalid Molecular Formula: o. Details: Unexpected symbol: 'o'", err.msg);
+        assert_eq!("Unexpected symbol: 'o'", err.msg);
     }
+
     #[test]
     fn errs_if_contains_special_symbols_outside_of_allowed_punctuation() {
         let err = parse_mf("=").err().unwrap();
